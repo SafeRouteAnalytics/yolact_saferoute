@@ -660,6 +660,43 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
 
     net = CustomDataParallel(net).cuda()
     transform = torch.nn.DataParallel(FastBaseTransform()).cuda()
+
+    mask_save_path ="mask_data"
+    if mask_save_path and not os.path.exists(mask_save_path):
+        os.makedirs(mask_save_path)
+
+    frame_idx = 0
+    while vid.isOpened():
+        ret, frame = vid.read()
+        if not ret:
+            break
+
+        frame_idx += 1
+        frame_tensor = torch.from_numpy(frame).cuda().float()
+        batch = FastBaseTransform()(frame_tensor.unsqueeze(0))
+        preds = net(batch)
+
+        # Extract masks
+        with timer.env('Postprocess'):
+            save = cfg.rescore_bbox
+            cfg.rescore_bbox = True
+            t = postprocess(preds, frame_width, frame_height, crop_masks=args.crop, score_threshold=args.score_threshold)
+            cfg.rescore_bbox = save
+
+        idx = t[1].argsort(0, descending=True)[:args.top_k]
+        masks = t[3][idx]  # Extract mask tensor
+        masks = masks.cpu().numpy() * 255  # Convert masks to binary
+
+        # Save each mask as an image
+        for j, mask in enumerate(masks):
+            mask_filename = os.path.join(mask_save_path, f"frame_{frame_idx}_mask_{j}.png")
+            cv2.imwrite(mask_filename, mask)
+
+        print(f"Saved masks for frame {frame_idx}")
+
+    vid.release()
+    print("Processing completed.")
+
     frame_times = MovingAverage(100)
     fps = 0
     frame_time_target = 1 / target_fps
